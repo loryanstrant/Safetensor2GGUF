@@ -24,8 +24,10 @@ CONVERT_SCRIPT = os.getenv(
     "/opt/llama.cpp/convert_lora_to_gguf.py",
 )
 
-# In-memory store for running / completed jobs (kept simple on purpose).
+# In-memory store for running / completed jobs.
+# Protected by _jobs_lock for safe concurrent access.
 jobs: dict[str, dict[str, Any]] = {}
+_jobs_lock = asyncio.Lock()
 
 
 # ── HTML front-end ──────────────────────────────────────────────────────────
@@ -101,7 +103,8 @@ async def convert(request: Request) -> JSONResponse:
     cmd.append(lora_path)
 
     job_id = uuid.uuid4().hex[:12]
-    jobs[job_id] = {"status": "running", "log": "", "cmd": " ".join(cmd)}
+    async with _jobs_lock:
+        jobs[job_id] = {"status": "running", "log": "", "cmd": " ".join(cmd)}
 
     asyncio.create_task(_run_job(job_id, cmd))
 
@@ -119,17 +122,20 @@ async def _run_job(job_id: str, cmd: list[str]) -> None:
     async for raw_line in proc.stdout:
         line = raw_line.decode(errors="replace")
         output_lines.append(line)
-        jobs[job_id]["log"] = "".join(output_lines)
+        async with _jobs_lock:
+            jobs[job_id]["log"] = "".join(output_lines)
 
     await proc.wait()
-    jobs[job_id]["status"] = "success" if proc.returncode == 0 else "failed"
-    jobs[job_id]["returncode"] = proc.returncode
+    async with _jobs_lock:
+        jobs[job_id]["status"] = "success" if proc.returncode == 0 else "failed"
+        jobs[job_id]["returncode"] = proc.returncode
 
 
 # ── Job status polling ──────────────────────────────────────────────────────
 @app.get("/api/jobs/{job_id}")
 async def job_status(job_id: str) -> JSONResponse:
-    job = jobs.get(job_id)
+    async with _jobs_lock:
+        job = jobs.get(job_id)
     if job is None:
         return JSONResponse({"error": "unknown job"}, status_code=404)
     return JSONResponse(
