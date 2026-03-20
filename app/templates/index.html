@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LoRA → GGUF Converter</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>🔄 LoRA → GGUF Converter</h1>
+    <p class="subtitle">
+      Convert Hugging Face PEFT LoRA adapters (<code>.safetensors</code>) to
+      GGUF format for use with <strong>LocalAI</strong> / <strong>llama.cpp</strong>.
+    </p>
+
+    <form id="convertForm">
+      <!-- LoRA adapter directory -->
+      <div class="field">
+        <label for="loraPath">LoRA Adapter Directory</label>
+        <div class="input-row">
+          <input id="loraPath" type="text" placeholder="/models/personas/Gary/" required>
+          <button type="button" class="browse-btn" data-target="loraPath" data-mode="directory">Browse…</button>
+        </div>
+        <small>Directory containing <code>adapter_config.json</code> and <code>adapter_model.safetensors</code>.</small>
+      </div>
+
+      <!-- Base model -->
+      <div class="field">
+        <label for="baseModel">Base Model Path <span class="opt">(optional)</span></label>
+        <div class="input-row">
+          <input id="baseModel" type="text" placeholder="/models/Qwen3.5-4B-Q4_K_M.gguf">
+          <button type="button" class="browse-btn" data-target="baseModel" data-mode="any">Browse…</button>
+        </div>
+        <small>Path to HF model directory or GGUF base model. Leave empty to auto-detect from adapter config.</small>
+      </div>
+
+      <!-- Output type -->
+      <div class="field">
+        <label for="outtype">Output Type</label>
+        <select id="outtype">
+          <option value="f32">f32 – float32</option>
+          <option value="f16">f16 – float16</option>
+          <option value="bf16">bf16 – bfloat16</option>
+          <option value="q8_0" selected>q8_0 – Q8_0</option>
+          <option value="auto">auto – highest-fidelity 16-bit</option>
+        </select>
+      </div>
+
+      <!-- Output file -->
+      <div class="field">
+        <label for="outfile">Output File <span class="opt">(optional)</span></label>
+        <div class="input-row">
+          <input id="outfile" type="text" placeholder="Leave empty for default (same directory as adapter)">
+          <button type="button" class="browse-btn" data-target="outfile" data-mode="any">Browse…</button>
+        </div>
+      </div>
+
+      <!-- Verbose -->
+      <div class="field checkbox-field">
+        <label><input id="verbose" type="checkbox"> Verbose logging</label>
+      </div>
+
+      <button id="convertBtn" type="submit">Convert</button>
+    </form>
+
+    <!-- Status -->
+    <div id="status" class="status hidden">
+      <h2>Conversion Output</h2>
+      <div id="statusBadge" class="badge">running</div>
+      <pre id="logOutput"></pre>
+    </div>
+  </div>
+
+  <!-- File browser modal -->
+  <div id="browserModal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Browse Files</h2>
+        <button id="closeBrowser" class="close-btn">&times;</button>
+      </div>
+      <div id="browserPath" class="browser-path">/</div>
+      <ul id="browserList" class="browser-list"></ul>
+      <div class="modal-footer">
+        <button id="selectCurrent" class="select-btn">Select Current Directory</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ── File browser ──────────────────────────────────────────────────────
+    const modal       = document.getElementById("browserModal");
+    const browserPath = document.getElementById("browserPath");
+    const browserList = document.getElementById("browserList");
+    let   browseTarget = null;
+    let   browseMode   = "any";          // "directory" or "any"
+    let   currentBrowsePath = "/";
+
+    document.querySelectorAll(".browse-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        browseTarget = document.getElementById(btn.dataset.target);
+        browseMode   = btn.dataset.mode;
+        const initial = browseTarget.value.trim();
+        loadBrowser(initial || "/models");
+        modal.classList.remove("hidden");
+      });
+    });
+
+    document.getElementById("closeBrowser").addEventListener("click", () =>
+      modal.classList.add("hidden"));
+
+    document.getElementById("selectCurrent").addEventListener("click", () => {
+      if (browseTarget) browseTarget.value = currentBrowsePath;
+      modal.classList.add("hidden");
+    });
+
+    async function loadBrowser(path) {
+      const res  = await fetch("/api/browse?path=" + encodeURIComponent(path));
+      const data = await res.json();
+      if (data.error) { alert(data.error); return; }
+
+      if (data.type === "file") {
+        // User clicked a file → select it
+        if (browseTarget) browseTarget.value = data.path;
+        modal.classList.add("hidden");
+        return;
+      }
+
+      currentBrowsePath = data.path;
+      browserPath.textContent = data.path;
+      browserList.innerHTML = "";
+
+      data.entries.forEach(entry => {
+        const li = document.createElement("li");
+        li.textContent = (entry.type === "directory" ? "📁 " : "📄 ") + entry.name;
+        li.dataset.path = entry.path;
+        li.dataset.type = entry.type;
+        li.addEventListener("click", () => {
+          if (entry.type === "directory") {
+            loadBrowser(entry.path);
+          } else {
+            if (browseTarget) browseTarget.value = entry.path;
+            modal.classList.add("hidden");
+          }
+        });
+        browserList.appendChild(li);
+      });
+    }
+
+    // ── Conversion form ───────────────────────────────────────────────────
+    const form      = document.getElementById("convertForm");
+    const statusDiv = document.getElementById("status");
+    const badge     = document.getElementById("statusBadge");
+    const logPre    = document.getElementById("logOutput");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const payload = {
+        lora_path:  document.getElementById("loraPath").value.trim(),
+        base_model: document.getElementById("baseModel").value.trim(),
+        outtype:    document.getElementById("outtype").value,
+        outfile:    document.getElementById("outfile").value.trim(),
+        verbose:    document.getElementById("verbose").checked,
+      };
+
+      statusDiv.classList.remove("hidden");
+      badge.textContent = "starting…";
+      badge.className   = "badge running";
+      logPre.textContent = "";
+
+      const res  = await fetch("/api/convert", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.error) {
+        badge.textContent = "error";
+        badge.className   = "badge failed";
+        logPre.textContent = data.error;
+        return;
+      }
+
+      pollJob(data.job_id);
+    });
+
+    async function pollJob(jobId) {
+      const poll = async () => {
+        const res  = await fetch("/api/jobs/" + jobId);
+        const data = await res.json();
+        badge.textContent = data.status;
+        badge.className   = "badge " + data.status;
+        logPre.textContent = data.log || "";
+        logPre.scrollTop = logPre.scrollHeight;
+
+        if (data.status === "running") {
+          setTimeout(poll, 1000);
+        }
+      };
+      poll();
+    }
+  </script>
+</body>
+</html>

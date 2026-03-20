@@ -1,0 +1,20 @@
+services:
+  lora-converter:
+    build: .
+    container_name: lora-to-gguf
+    ports:
+      - "7860:7860"
+    volumes:
+      # Mount your local models directory into the container.
+      # Place base models and LoRA adapter folders here.
+      - ./models:/models
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
