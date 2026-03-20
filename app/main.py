@@ -91,6 +91,17 @@ async def convert(request: Request) -> JSONResponse:
         base_path = Path(base_model)
         if not base_path.exists():
             return JSONResponse({"error": "base model path does not exist"}, status_code=400)
+        if not base_path.is_dir():
+            return JSONResponse(
+                {
+                    "error": (
+                        "base_model must be a Hugging Face model directory "
+                        "(containing config.json), not a file. "
+                        "GGUF files cannot be used as the base model."
+                    )
+                },
+                status_code=400,
+            )
 
     cmd: list[str] = ["python3", CONVERT_SCRIPT]
     if base_model:
