@@ -29,10 +29,10 @@
       <div class="field">
         <label for="baseModel">Base Model Path <span class="opt">(optional)</span></label>
         <div class="input-row">
-          <input id="baseModel" type="text" placeholder="/models/Qwen3.5-4B-Q4_K_M.gguf">
-          <button type="button" class="browse-btn" data-target="baseModel" data-mode="any">Browse…</button>
+          <input id="baseModel" type="text" placeholder="/models/Qwen3.5-4B/">
+          <button type="button" class="browse-btn" data-target="baseModel" data-mode="directory">Browse…</button>
         </div>
-        <small>Path to HF model directory or GGUF base model. Leave empty to auto-detect from adapter config.</small>
+        <small>Path to HF model directory (containing <code>config.json</code>). Leave empty to auto-detect from adapter config.</small>
       </div>
 
       <!-- Output type -->
